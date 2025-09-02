@@ -70,4 +70,24 @@ module.exports = {
       return data.total_balance * 1e9
     },
   },
+  starknet: {
+    call: async ({ callBody, abi, allAbi, permitFailure }) => {
+      const { data } = await client.post('/starknet/call', { 
+        callBody, abi, allAbi, permitFailure 
+      })
+      return data
+    },
+    multiCall: async ({ callBodies, calls, rootAbi, allAbi, permitFailure }) => {
+      const { data } = await client.post('/starknet/multiCall', { 
+        callBodies, calls, rootAbi, allAbi, permitFailure 
+      })
+      return data
+    },
+    getEvents: async ({ fromBlock, topic, target }) => {
+      const { data } = await client.post('/starknet/getEvents', { 
+        fromBlock, topic, target 
+      })
+      return data
+    }
+  },
 }

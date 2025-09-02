@@ -4,18 +4,14 @@
 const { getUniqueAddresses } = require('../tokenMapping')
 const { Contract, validateAndParseAddress, number, hash, CallData } = require('starknet')
 const abi = require('../../10kswap/abi')
-const axios = require('axios')
 const plimit = require('p-limit')
-const { sliceIntoChunks, sleep } = require('../utils')
 const { getUniTVL } = require('../cache/uniswap')
 const { getCache } = require('../cache')
-const { getEnv } = require('../env')
 const ADDRESSES = require('../coreAssets.json')
+const rpcProxy = require('./rpcProxy')
 
 const _rateLimited = plimit(1)
 const rateLimited = fn => (...args) => _rateLimited(() => fn(...args))
-
-const STARKNET_RPC = getEnv('STARKNET_RPC')
 
 function formCallBody({ abi, target, params = [], allAbi = [] }, id = 0) {
   if ((params || params === 0) && !Array.isArray(params))
@@ -59,12 +55,21 @@ function parseOutput(result, abi, allAbi, { permitFailure = false, responseObj =
 }
 
 async function call({ abi, target, params = [], allAbi = [], permitFailure = false } = {}, ...rest) {
-  const { data } = await axios.post(STARKNET_RPC, formCallBody({ abi, target, params, allAbi }))
-  return parseOutput(data.result, abi, allAbi, { permitFailure, responseObj: data })
+  // Prepare the call data in the format rpc-agg expects
+  const callBody = formCallBody({ abi, target, params, allAbi })
+  const result = await rpcProxy.starknet.call({ 
+    callBody, 
+    abi, 
+    allAbi, 
+    permitFailure 
+  })
+  return parseOutput(result, abi, allAbi, { permitFailure, responseObj: { result } })
 }
 
 async function multiCall({ abi: rootAbi, target: rootTarget, calls = [], allAbi = [], permitFailure = false }) {
   if (!calls.length) return []
+  
+  // Prepare the calls in the format rpc-agg expects
   calls = calls.map((callArgs) => {
     if (typeof callArgs !== 'object') {
       if (!rootTarget) return { target: callArgs, abi: rootAbi, allAbi, }
@@ -73,20 +78,21 @@ async function multiCall({ abi: rootAbi, target: rootTarget, calls = [], allAbi 
     const { target, params, abi } = callArgs
     return { target: target || rootTarget, params, abi: abi || rootAbi }
   })
+  
   const callBodies = calls.map(formCallBody)
-  const allData = []
-  const chunks = sliceIntoChunks(callBodies, 25)
-  for (const chunk of chunks) {
-    await sleep(200)
-    const { data } = await axios.post(STARKNET_RPC, chunk)
-    allData.push(...data)
-  }
-
+  const results = await rpcProxy.starknet.multiCall({ 
+    callBodies, 
+    calls, 
+    rootAbi, 
+    allAbi, 
+    permitFailure 
+  })
+  
+  // Parse the results
   const response = []
-  allData.forEach((i) => {
-    const { result, id } = i
+  results.forEach((result, id) => {
     const abi = calls[id].abi ?? rootAbi
-    response[id] = parseOutput(result, abi, allAbi, { permitFailure, responseObj: i })
+    response[id] = parseOutput(result, abi, allAbi, { permitFailure, responseObj: { result } })
   })
   return response
 }
@@ -177,18 +183,7 @@ module.exports = {
 async function getLogs({ fromBlock, topic, target }) {
   const cache = await getCache('starknet-logs', topic)
   fromBlock = cache.toBlock || fromBlock
-  const { data: { result: to_block } } = await axios.post(STARKNET_RPC, { "id": 1, "jsonrpc": "2.0", "method": "starknet_blockNumber" })
-  const params = {
-    filter: {
-      from_block: fromBlock,
-      to_block,
-      keys: [topic],
-      "address": target,
-    }
-  }
-
-  const body = { jsonrpc: "2.0", id: 1, method: "starknet_getEvents", params }
-  const { data } = await axios.post(STARKNET_RPC, body)
+  return await rpcProxy.starknet.getEvents({ fromBlock, topic, target })
 }
 
 api.call = module.exports.call
